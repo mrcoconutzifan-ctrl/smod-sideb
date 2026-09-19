@@ -70,7 +70,7 @@ subcategories = {
     "movers": ["mover", "player"],  # Added player
     "pushables": ["push", "zero directional", "one directional", "two directional", "slide", "three directional",
                   "random push"],
-    "rotators": ["cw rotator", "ccw rotator", "180 rotator"],
+    "rotators": ["cw rotator", "ccw rotator", "180 rotator","random rotator"],
     "generators": ["generator", "cw generator", "ccw generator"],
     "walls": ["wall"],
     "trashes": ["trash"],
