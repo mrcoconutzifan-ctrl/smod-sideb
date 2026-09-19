@@ -332,17 +332,31 @@ def draw_grid():
         if cell is None: continue
         draw_cell(lerpp(cell.oldx, trashpos[0], lerp), lerpp(cell.oldy, trashpos[1], lerp),
                   lerpp(cell.olddirection, cell.direction, lerp), cell.name, flags={"eaten": True})
+
     for x, y, cell in grid:
         if cell is None: continue
         if cell.olddirection == 3 and cell.direction == 0: cell.olddirection = -1
         if cell.olddirection == 0 and cell.direction == 3: cell.olddirection = 4
-        draw_cell(lerpp(cell.oldx, x, lerp), lerpp(cell.oldy, y, lerp), lerpp(cell.olddirection, cell.direction, lerp),
-                  cell.name)
-        for effect in vars(cell.effects):
-            if not getattr(cell.effects, effect): continue
-            draw_cell(lerpp(cell.oldx, x, lerp), lerpp(cell.oldy, y, lerp),
-                      lerpp(cell.olddirection, cell.direction, lerp),
-                      f"effects/{effect}")
+
+        # --- ROTATIONAL LERP FOR GEARS ---
+        if hasattr(cell, "gear_pivot") and cell.gear_pivot is not None:
+            gx, gy = cell.gear_pivot
+            dx = cell.oldx - gx
+            dy = cell.oldy - gy
+            radius = math.hypot(dx, dy)
+    
+            start_angle = math.atan2(dy, dx)
+    
+            angle_sweep = -(math.pi / 2) * cell.gear_rotation * lerp
+            current_angle = start_angle + angle_sweep
+    
+            render_x = gx + radius * math.cos(current_angle)
+            render_y = gy + radius * math.sin(current_angle)
+    
+            draw_cell(render_x, render_y, lerpp(cell.olddirection, cell.direction, lerp), cell.name)
+        else:
+            # Standard linear lerp for normal movements
+            draw_cell(lerpp(cell.oldx, x, lerp), lerpp(cell.oldy, y, lerp), lerpp(cell.olddirection, cell.direction, lerp), cell.name)
 
 
 # =================================================
@@ -370,16 +384,63 @@ def reset_cells():
                     setattr(cell.effects, effect, False)
 
 
+
+# =================================================
+# RUNTIME
+# =================================================
+
+def place_cell(x, y, direction, name):
+    if 0 <= x < grid.width and 0 <= y < grid.height:
+        grid[x, y] = Cell(direction, name)
+
+
+def delete_cell(x, y):
+    if 0 <= x < grid.width and 0 <= y < grid.height:
+        grid[x, y] = None
+
+
+def reset_cells():
+    grid.eaten = []
+    perm_effects = []
+    for x, y, cell in grid:
+        if cell is not None:
+            cell.oldx = x
+            cell.oldy = y
+            cell.olddirection = cell.direction
+            cell.updated = False
+            
+            # Clear gear pivot attributes on tick reset
+            if hasattr(cell, "gear_pivot"):
+                del cell.gear_pivot
+            if hasattr(cell, "gear_rotation"):
+                del cell.gear_rotation
+
+            for effect in vars(cell.effects):
+                if effect not in perm_effects:
+                    setattr(cell.effects, effect, False)
+
+
 dt = 0
 while running:
     mouse_pos = pygame.mouse.get_pos()
     mx, my = int((mouse_pos[0] + camera_x) // cell_size), int((mouse_pos[1] + camera_y) // cell_size)
-    lerp += dt * (1 / update_delay)
-    if lerp >= 1:
-        lerp = 0
-        reset_cells()
-        if sim_running:
+    if sim_running:
+        lerp += dt * (1 / update_delay)
+        if lerp >= 1:
+            lerp = 0
+            reset_cells()
             grid.update_cells()
+    else:
+        lerp = 0
+        for x, y, cell in grid:
+            if cell is not None:
+                cell.oldx = x
+                cell.oldy = y
+                cell.olddirection = cell.direction
+                if hasattr(cell, "gear_pivot"):
+                     del cell.gear_pivot
+                if hasattr(cell, "gear_rotation"):
+                     del cell.gear_rotation
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -417,35 +478,23 @@ while running:
         place_cell(mx, my, selected_cell["direction"], selected_cell["name"])
     if mouse_buttons[2] and not UI.hover():
         delete_cell(mx, my)
-    plyr_pos = cells.grid.PlayerCamXY()
-    if plyr_pos and sim_running:
-        avgx,avgy = plyr_pos
-        target_cam_x = (avgx * cell_size) + (
-            cell_size / 2
-        ) - (SCREEN_WIDTH / 2)
-        target_cam_y = (avgy * cell_size) + (
-            cell_size / 2
-        ) - (SCREEN_HEIGHT / 2)
-        camera_x += (target_cam_x - camera_x) * 0.1
-        camera_y += (target_cam_y - camera_y) * 0.1
-    else:
-        key_buttons = pygame.key.get_pressed()
-        cam_speed = 60 * dt * 5
-        if key_buttons[pygame.K_w]:
-            camera_y -= cam_speed
-        if key_buttons[pygame.K_s]:
-            camera_y += cam_speed
-        if key_buttons[pygame.K_d]:
-            camera_x += cam_speed
-        if key_buttons[pygame.K_a]:
-            camera_x -= cam_speed
-    UI.update_animation(dt)
+    key_buttons = pygame.key.get_pressed()
+    cam_speed = 60 * dt * 5
+    if key_buttons[pygame.K_w]:
+        camera_y -= cam_speed
+    if key_buttons[pygame.K_s]:
+        camera_y += cam_speed
+    if key_buttons[pygame.K_d]:
+        camera_x += cam_speed
+    if key_buttons[pygame.K_a]:
+        camera_x -= cam_speed
     screen.fill((20,) * 3)
     draw_grid()
     draw_ghost_cell(mx, my, selected_cell["direction"], selected_cell["name"])
     UI.draw()
     draw_infobox()
     draw_cate_infobox()
+    UI.update_animation(dt)
     pygame.display.flip()
     dt = clock.tick(60) / 1000
 pygame.quit()

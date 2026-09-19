@@ -19,11 +19,15 @@ chunks = {
 
 def to_vec(direction):
     return {
-        0: Vector(1, 0),
-        1: Vector(0, 1),
-        2: Vector(-1, 0),
-        3: Vector(0, -1),
-    }[direction]
+        0: Vector(1, 0),    # 0: Right  (+X)
+        0.5: Vector(1, 1),  # Down-Right
+        1: Vector(0, 1),    # 1: Down   (+Y)
+        1.5: Vector(-1, 1), # Down-Left
+        2: Vector(-1, 0),   # 2: Left   (-X)
+        2.5: Vector(-1, -1),# Up-Left
+        3: Vector(0, -1),   # 3: Up     (-Y)
+        3.5: Vector(1, -1), # Up-Right
+    }[direction % 4]
 
 def to_dir(vector):
     if vector.x == 1 and vector.y == 0: return 0
@@ -64,10 +68,10 @@ class Vector:
         self.y = round(new_y)
 
 class Grid:
-    def __init__(self, width, height):
+    def __init__(self, width, height):        
         self.width = width
         self.height = height
-        self.grid = [[None] * height for _ in range(width)]
+        self.grid = [[None for _ in range(height)] for _ in range(width)]
         self.eaten = []
     def __getitem__(self, key):
         x, y = key
@@ -81,47 +85,51 @@ class Grid:
         if 0 <= x < self.width and 0 <= y < self.height:
             self.grid[x][y] = value
     def __iter__(self):
+        if not hasattr(self, "width"):
+            raise AttributeError(f"Grid instance {self} has no 'width' attribute. Check how it was initialized.")
         for x in range(self.width):
             for y in range(self.height):
                 yield x, y, self[x, y]
+
     def subtick(self, chunkid, direction=None):
         func = getattr(self, "Do" + chunkid[0].upper() + chunkid[1:])
+
+        # Non-directional subticks (Gears, Rotators, Thawers, etc.)
         if direction is None:
             for x, y, cell in self:
-                if (cell is not None and cell.name != chunkid) and (cell is not None and cell.name not in chunks.get(chunkid, [])):
+                if cell is None or cell.updated or cell.effects.frozen:
                     continue
-                if cell is not None and not cell.updated:
-                    if cell.effects.frozen: continue
+                if cell.name != chunkid and cell.name not in chunks.get(chunkid, []):
+                    continue
+                func(x, y, cell)
+                cell.updated = True
+            return
+
+        # Directional subticks (Movers, Generators)
+        if direction == 0:    # Right: scan X from width-1 down to 0
+            x_range = list(range(self.width - 1, -1, -1))
+            y_range = list(range(self.height))
+        elif direction == 2:  # Left: scan X from 0 to width-1
+            x_range = list(range(self.width))
+            y_range = list(range(self.height))
+        elif direction == 1:  # Down: scan Y from height-1 down to 0
+            x_range = list(range(self.width))
+            y_range = list(range(self.height - 1, -1, -1))
+        elif direction == 3:  # Up: scan Y from 0 to height-1
+            x_range = list(range(self.width))
+            y_range = list(range(self.height))
+
+        for x in x_range:
+            for y in y_range:
+                cell = self[x, y]
+                if cell is None or cell.updated or cell.effects.frozen:
+                    continue
+                if cell.name != chunkid and cell.name not in chunks.get(chunkid, []):
+                    continue
+                if cell.direction == direction:
                     func(x, y, cell)
                     cell.updated = True
-            return
-        if direction % 2 == 0:
-            r = range(0, self.width)
-            if direction == 0:
-                r = reversed(r)
-            for x in r:
-                for y in range(0, self.height):
-                    if (cell := self[x, y]) is not None and not cell.updated:
-                        if (cell.name != chunkid) and (cell.name not in chunks.get(chunkid, [])):
-                            continue
-                        if cell.direction == direction:
-                            if cell.effects.frozen: continue
-                            func(x, y, cell)
-                            cell.updated = True
-        elif direction % 2 == 1:
-            r = range(0, self.height)
-            if direction == 1:
-                r = reversed(r)
-            for y in r:
-                for x in range(0, self.width):
-                    if (cell := self[x, y]) is not None and not cell.updated:
-                        if (cell.name != chunkid) and (cell.name not in chunks.get(chunkid, [])):
-                            continue
-                        if cell.direction == direction:
-                            if cell.effects.frozen: continue
-                            func(x, y, cell)
-                            cell.updated = True
-
+    
     def update_cells(self):
         self.subtick("thawer")
         self.subtick("mirror")
@@ -131,6 +139,7 @@ class Grid:
         self.subtick("generator", 2)
         self.subtick("generator", 1)
         self.subtick("generator", 3)
+        self.subtick("gear")
         self.subtick("rotator")
         self.subtick("mover", 0)
         self.subtick("mover", 2)
@@ -146,14 +155,31 @@ class Grid:
             l.append((x+v.x, y+v.y, self[x+v.x, y+v.y]))
         return l
 
+    def get_surrounding(self, x, y):
+        l = {}
+        for i in range(8):
+            dir_val = i / 2
+            v = to_vec(dir_val)
+            l[dir_val] = (x + v.x, y + v.y, self[x + v.x, y + v.y])
+        return l
+
     def freeze_cell(self, x, y):
         if self[x, y] is not None:
             self[x, y].effects.frozen = True
+
+    def thaw_cell(self, x, y):
+        if self[x, y] is not None:
+            self[x, y].effects.frozen = False
 
     def rotate_cell(self, x, y, amt):
         if self[x, y] is not None:
             self[x, y].direction += amt
             self[x, y].direction %= 4
+
+    def redirect_cell(self, x, y, direction):
+        if self[x, y] is not None:
+            self[x, y].direction = direction
+
 
     def eat_cell(self, x, y, tx, ty):
         self.eaten.append((self[x, y], (tx, ty)))
@@ -191,19 +217,14 @@ class Grid:
                 side = to_side(cell.direction, cdir)
                 if cell.name == "curve diverger":
                     if side == 0:
-                        direction.rotate(-45)
+                        direction.rotate(-1)
                     elif side == 1:
-                        direction.rotate(45)
+                        direction.rotate(1)
                     else:
                         break
                 elif cell.name == "straight diverger":
-                    if side == 2:
-                        grid.step_forward(1, 1, Vector(0,0))
-                    elif side == 0:
-                        grid.step_forward(-1, -1, Vector(0,0))
-                    else:
+                    if side not in (0, 2):
                         break
-                    
                 else:
                     break
         if cell is not None:
@@ -258,18 +279,20 @@ class Grid:
                 break
             to_push.append((oldx, oldy, cx, cy))
             lastx, lasty = oldx, oldy
-
-        if not success: return False
-        for px, py, pcx, pcy in reversed(to_push):
-            if self[px, py] is None: continue
-            self[pcx, pcy] = self[px, py]
-            self[px, py] = None
-
-        if self[orig_x, orig_y] is None:
-            self[orig_x, orig_y] = flags["replacecell"]
-        return True
-
+            
+        if success and to_push:
+            for old_x, old_y, new_x, new_y in reversed(to_push):
+                moved_cell = self[old_x, old_y]
+                if moved_cell is not None:
+                    moved_cell.oldx = old_x
+                    moved_cell.oldy = old_y
+                    self[new_x, new_y] = moved_cell
+                    self[old_x, old_y] = None
     def handle_push(self, x, y, direction, flags):
+        if isinstance(direction, int):
+            direction = to_vec(direction)
+        elif isinstance(direction, (tuple, list)):
+            direction = Vector(direction[0], direction[1])
         cell = self[x, y]
         old_direction = Vector(direction.x, direction.y)
         nx, ny, direction, _ = self.step_forward(x, y, direction)
@@ -288,8 +311,17 @@ class Grid:
         if cell.name == "slide":
             if ddir % 2 != cell.direction % 2:
                 flags["force"] = 0
-        if cell.name == "one way":
-            if ddir != cell.direction:
+        if cell.name == "two directional":
+            if ddir not in [0, 1]:
+                flags["force"] = 0
+        if cell.name == "three directional":
+            if ddir == 2:
+                flags["force"] = 0
+        if cell.name == "random push":
+            if random.random() < 0.5:
+                flags["force"] = 0
+        if cell.name == "one directional":
+            if ddir != 0:
                 flags["force"] = 0
         if cell.name == "wall":
             flags["force"] = 0
@@ -375,15 +407,13 @@ class Grid:
         for nx, ny in neighbors:
             if 0 <= nx < self.width and 0 <= ny < self.height:
                 target = self[nx, ny]
-                if target is not None:
-                    if target.name in ("wall", "crimson","trash"):
-                        continue
-                    self.eat_cell(nx, ny, nx, ny)
-
-            new_cell = cell.copy()
-            new_cell.updated = True
-            new_cell.oldx, new_cell.oldy = x, y
-            self[nx, ny] = new_cell
+                if target is None:
+                    new_cell = cell.copy()
+                    new_cell.updated = True
+                    new_cell.oldx, new_cell.oldy = x, y
+                    self[nx, ny] = new_cell
+                    
+            
 
     def DoRedirector(self, x, y, cell):
         for i, j, c in self.get_neighbors(x, y):
@@ -404,27 +434,42 @@ class Grid:
             if self[nx, ny] is not None and self[nx, ny].name in gears:
                 return
 
-        self.rotate_cell(gear_x, gear_y, rotation)
+        self.rotate_cell(gear_x, gear_y, -rotation)
 
+        # Clear old positions
         for nx, ny, _ in old_states.values():
             self[nx, ny] = None
 
-        for i in range(8):
-            i /= 2
-            nx, ny, cell = old_states[i]
-            if cell is None:
+        # 8 surrounding slots in clockwise order
+        perimeter = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]
+        shift = 2 if rotation == 1 else -2
+
+        for idx, current_dir in enumerate(perimeter):
+            nx, ny, cell = old_states[current_dir]
+            if cell is None or getattr(cell.effects, "frozen", False):
                 continue
 
-            target_idx = (i + rotation) % 4
-            target_nx, target_ny, _ = old_states[target_idx]
+            target_idx = (idx + shift) % len(perimeter)
+            target_dir = perimeter[target_idx]
+            target_nx, target_ny, _ = old_states[target_dir]
 
             to_copy = cell.copy()
-            to_copy.direction = (to_copy.direction + rotation) % 4
+            to_copy.oldx = nx
+            to_copy.oldy = ny
+            to_copy.direction = -(cell.direction + rotation) % 4
+            to_copy.olddirection = -cell.direction
+            
+            # --- Store gear rotation metadata for the renderer ---
+            to_copy.gear_pivot = (gear_x, gear_y)
+            to_copy.gear_rotation = rotation  # 1 for CW, -1 for CCW
+            # ----------------------------------------------------
+
             self[target_nx, target_ny] = to_copy
+
     def DoGear(self, x, y, cell):
         rotation = {
-            "cw gear": 1,
-            "ccw gear": -1,
+            "cw gear": -1,
+            "ccw gear": 1,
         }
         self.do_basic_gear(x, y, rotation[cell.name])
     def PlayerCamXY(self):
@@ -444,11 +489,11 @@ grid = Grid(grid_width, grid_height)
 class EffectList:
     def __init__(self, d=None):
         d = d or {}
-        for var in ["frozen"]:
+        for var in ["frozen","thawed"]:
             setattr(self, var, d.get(var, False))
 
 class Cell:
-    def __init__(self, direction, name, oldx=None, oldy=None, olddirection=None, eatencells=None, updated=False, effects=None):
+    def __init__(self, direction, name, oldx=None, oldy=None, olddirection=None, eatencells=None, updated=False, effects=None, **kwargs):
         self.direction = direction
         self.name = name
         self.oldx = oldx
@@ -457,9 +502,12 @@ class Cell:
         self.eatencells = [] if eatencells is None else eatencells
         self.updated = updated
         self.effects = effects if effects is not None else EffectList([])
+        
+        # Automatically assign any additional keyword arguments passed in
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def copy(self):
         copied = Cell(**vars(self))
-        copied.updated = False
         copied.effects = deepcopy(copied.effects)
         return copied
